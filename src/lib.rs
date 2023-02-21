@@ -1,4 +1,9 @@
 //! Yet another implementation of pool of generic items.
+//! 
+//! # Features
+//! 
+//! - `log`: Enables logging using the `log` crate
+//! - `tracing`: Enables logging using the `tracing` crate
 
 #[macro_use]
 mod cfg;
