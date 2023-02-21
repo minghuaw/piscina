@@ -172,7 +172,7 @@ impl<T> Pool<T> {
         }
     }
 
-    /// Creates an empty pool with the specified capacity for both the ready and borrowed lists
+    /// Creates an empty pool with the specified capacity for both the ready and borrowed lists.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             ready: VecDeque::with_capacity(capacity),
@@ -180,11 +180,9 @@ impl<T> Pool<T> {
         }
     }
 
-    /// Returns the number of ready and borrowed items. The first value is the
-    /// number of ready items, and the second value is the number of borrowed
-    /// items.
-    pub fn len(&self) -> (usize, usize) {
-        (self.ready.len(), self.borrowed.len())
+    /// Returns the number of all items, whether ready or borrowed.
+    pub fn len(&self) -> usize {
+        self.ready.len() + self.borrowed.len()
     }
 
     /// Shrinks the capacity of both the ready and borrowed lists as much as
@@ -367,6 +365,25 @@ mod tests {
                 }
             }
         };
+    }
+
+    #[test]
+    fn create_pool_with_capacity() {
+        let pool = Pool::<i32>::with_capacity(10);
+        assert_eq!(pool.len(), 0);
+    }
+
+    #[test]
+    fn pool_len_does_not_change_after_borrowing_item() {
+        let mut pool = Pool::new();
+        pool.put(1);
+        assert_eq!(pool.len(), 1);
+
+        let item = assert_some!(pool.try_get());
+        assert_eq!(pool.len(), 1);
+
+        drop(item);
+        assert_eq!(pool.len(), 1);
     }
 
     #[test]
