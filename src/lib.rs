@@ -1,54 +1,58 @@
 //! Yet another implementation of pool of generic items.
-//! 
+//!
 //! # Features
-//! 
+//!
 //! - `log`: Enables logging using the `log` crate
 //! - `tracing`: Enables logging using the `tracing` crate
-//! 
+//!
 //! # Examples
-//! 
+//!
 //! Non-async example:
-//! 
+//!
 //! ```rust
 //! use piscina::Pool;
-//! 
+//!
 //! let mut pool = Pool::new();
 //! pool.put(1);
 //! pool.put(2);
-//! 
+//!
 //! let item1 = pool.try_get();
 //! assert!(item1.is_some());
-//! 
+//!
 //! let item2 = pool.blocking_get();
-//! 
+//!
 //! let none = pool.try_get();
 //! assert!(none.is_none());
-//! 
+//!
 //! drop(item1);
 //! let item3 = pool.try_get();
 //! assert!(item3.is_some());
 //! ```
-//! 
+//!
 //! Async example:
-//! 
+//!
 //! ```rust
 //! use piscina::Pool;
-//! 
+//!
 //! futures::executor::block_on(async {
 //!     let mut pool = Pool::new();
 //!     pool.put(1);
 //!     pool.put(2);
-//! 
+//!
 //!     let item1 = pool.get().await;
 //!     let item2 = pool.get().await;
-//! 
+//!
 //!     let none = pool.try_get();
-//!     assert!(none.is_none()); 
-//! 
+//!     assert!(none.is_none());
+//!
 //!     drop(item1);
-//!     let item3 = pool.get().await; 
+//!     let item3 = pool.get().await;
 //! });
 //! ```
+//! 
+//! # TODO:
+//! 
+//! - [ ] Allow removal of items with `pop()` and `try_pop()` once an item becomes available
 
 #[macro_use]
 mod cfg;
@@ -102,7 +106,7 @@ impl<T> Drop for PooledItem<T> {
             let item = ManuallyDrop::take(&mut self.item);
             let sender = ManuallyDrop::take(&mut self.sender);
 
-            if let Err(_) = sender.send(item) {
+            if sender.send(item).is_err() {
                 cfg_log! {
                     log::error!("Failed to return item to pool");
                 }
@@ -185,6 +189,11 @@ impl<T> Pool<T> {
         self.ready.len() + self.borrowed.len()
     }
 
+    /// Returns `true` if the pool contains no items.
+    pub fn is_empty(&self) -> bool {
+        self.ready.is_empty() && self.borrowed.is_empty()
+    }
+
     /// Shrinks the capacity of both the ready and borrowed lists as much as
     /// possible.
     pub fn shrink_to_fit(&mut self) {
@@ -193,7 +202,7 @@ impl<T> Pool<T> {
     }
 
     /// Tries to get an item from the pool. Returns `None` if there is no item immediately available.
-    /// 
+    ///
     /// Please note that if the sender is dropped before the item is returned to the pool, the
     /// item will be lost and this will be reflected on the pool's length.
     pub fn try_get(&mut self) -> Option<PooledItem<T>> {
@@ -212,9 +221,9 @@ impl<T> Pool<T> {
 
     /// Gets an item from the pool. If there is no item immediately available, this will wait
     /// in a blocking manner until an item is available.
-    /// 
+    ///
     /// # Panic
-    /// 
+    ///
     /// This will panic if the sender is dropped before the item is returned to the pool, which
     /// should never happen.
     pub fn blocking_get(&mut self) -> PooledItem<T> {
@@ -239,7 +248,7 @@ impl<T> Pool<T> {
                     let (tx, rx) = futures_channel::oneshot::channel();
                     borrowed.push(rx);
                     return PooledItem::new(item, tx);
-                },
+                }
                 None => std::thread::yield_now(),
             }
         }
@@ -255,10 +264,7 @@ impl<T> Pool<T> {
     pub fn get(&mut self) -> Get<'_, T> {
         let ready = &mut self.ready;
         let borrowed = &mut self.borrowed;
-        Get { 
-            ready,
-            borrowed,
-        }
+        Get { ready, borrowed }
     }
 
     /// Puts an item into the pool
@@ -288,7 +294,7 @@ impl<'a, T> Future for Get<'a, T> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut this = self.project();
-        
+
         let ready = &mut this.ready;
         let borrowed = &mut this.borrowed;
 
@@ -308,7 +314,7 @@ impl<'a, T> Future for Get<'a, T> {
             Some(item) => {
                 let (tx, rx) = futures_channel::oneshot::channel();
                 borrowed.push(rx);
-                return Poll::Ready(PooledItem::new(item, tx));
+                Poll::Ready(PooledItem::new(item, tx))
             }
             None => Poll::Pending,
         }
@@ -320,51 +326,43 @@ mod tests {
     use super::*;
 
     macro_rules! assert_ready {
-        ($fut:expr) => {
-            {
-                let mut fut = $fut;
-                let pinned = std::pin::Pin::new(&mut fut);
-                match futures_util::poll!(pinned) {
-                    std::task::Poll::Ready(val) => val,
-                    std::task::Poll::Pending => panic!("expected Ready, got Pending"),
-                }
+        ($fut:expr) => {{
+            let mut fut = $fut;
+            let pinned = std::pin::Pin::new(&mut fut);
+            match futures_util::poll!(pinned) {
+                std::task::Poll::Ready(val) => val,
+                std::task::Poll::Pending => panic!("expected Ready, got Pending"),
             }
-        };
+        }};
     }
-    
+
     macro_rules! assert_pending {
-        ($fut:expr) => {
-            {
-                let mut fut = $fut;
-                let pinned = std::pin::Pin::new(&mut fut);
-                match futures_util::poll!(pinned) {
-                    std::task::Poll::Ready(_) => panic!("expected Pending, got Ready"),
-                    std::task::Poll::Pending => {}
-                }
+        ($fut:expr) => {{
+            let mut fut = $fut;
+            let pinned = std::pin::Pin::new(&mut fut);
+            match futures_util::poll!(pinned) {
+                std::task::Poll::Ready(_) => panic!("expected Pending, got Ready"),
+                std::task::Poll::Pending => {}
             }
-        };
+        }};
     }
 
     macro_rules! assert_some {
-        ($opt:expr) => {
-            {
-                match $opt {
-                    Some(val) => val,
-                    None => panic!("expected Some, got None"),
-                }
+        ($opt:expr) => {{
+            match $opt {
+                Some(val) => val,
+                None => panic!("expected Some, got None"),
             }
-        };
+        }};
     }
 
     macro_rules! assert_none {
-        ($opt:expr) => {
-            {
-                match $opt {
-                    Some(_) => panic!("expected None, got Some"),
-                    None => {}
-                }
+        ($opt:expr) => {{
+            match $opt {
+                Some(_) => panic!("expected None, got Some"),
+                None => {}
             }
-        };
+        }};
     }
 
     #[test]
@@ -398,7 +396,7 @@ mod tests {
         pool.put(1);
         assert_some!(pool.try_get());
     }
-    
+
     #[test]
     fn try_get_from_exhausted_pool_returns_none() {
         let mut pool = Pool::new();
@@ -420,11 +418,11 @@ mod tests {
     fn try_get_after_dropping_borrowed_item_and_putting_new_item_returns_some() {
         let mut pool = Pool::new();
         assert_none!(pool.try_get());
-        
+
         pool.put(1);
         let item = assert_some!(pool.try_get());
         assert_none!(pool.try_get());
-        
+
         drop(item);
         assert_some!(pool.try_get());
 
@@ -473,11 +471,11 @@ mod tests {
     async fn poll_get_after_dropping_borrowed_item_and_putting_new_item_returns_ready() {
         let mut pool = Pool::new();
         assert_pending!(pool.get());
-        
+
         pool.put(1);
         let item = assert_ready!(pool.get());
         assert_pending!(pool.get());
-        
+
         drop(item);
         assert_ready!(pool.get());
 
