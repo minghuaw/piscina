@@ -79,6 +79,33 @@ impl<'a, T> PooledItem<'a, T> {
     }
 }
 
+/// Loop through all borrowed items and try to receive them. If the sender
+/// has been dropped, the item is no longer retrievable and is removed from
+/// the pool.
+fn try_recv_from_borrowed<T>(ready: &mut VecDeque<T>, borrowed: &mut Vec<Receiver<T>>) {
+    borrowed.retain_mut(|rx| {
+        match rx.try_recv() {
+            Ok(Some(item)) => {
+                ready.push_back(item);
+                false
+            }
+            Ok(None) => true,
+            Err(_) => {
+                // Sender has been dropped, so the item is no longer
+                // retrievable.
+                cfg_log! {
+                    log::error!("Item was dropped without being returned to pool");
+                }
+
+                cfg_tracing! {
+                    tracing::error!("Item was dropped without being returned to pool");
+                }
+                false
+            }
+        }
+    });
+}
+
 /// A pool of generic items
 ///
 /// Internally it maintains two lists: one of ready items and one of borrowed
@@ -120,42 +147,14 @@ impl<T> Pool<T> {
         self.borrowed.shrink_to_fit();
     }
 
-    /// Loop through all borrowed items and try to receive them. If the sender
-    /// has been dropped, the item is no longer retrievable and is removed from
-    /// the pool.
-    fn try_recv_from_borrowed(&mut self) {
-        let ready = &mut self.ready;
-        let borrowed = &mut self.borrowed;
-
-        borrowed.retain_mut(|rx| {
-            match rx.try_recv() {
-                Ok(Some(item)) => {
-                    ready.push_back(item);
-                    false
-                }
-                Ok(None) => true,
-                Err(_) => {
-                    // Sender has been dropped, so the item is no longer
-                    // retrievable.
-                    cfg_log! {
-                        log::error!("Item was dropped without being returned to pool");
-                    }
-
-                    cfg_tracing! {
-                        tracing::error!("Item was dropped without being returned to pool");
-                    }
-                    false
-                }
-            }
-        });
-    }
-
     /// Tries to get an item from the pool. Returns `None` if there is no item immediately available.
     /// 
     /// Please note that if the sender is dropped before the item is returned to the pool, the
     /// item will be lost and this will be reflected on the pool's length.
     pub fn try_get(&mut self) -> Option<PooledItem<'_, T>> {
-        self.try_recv_from_borrowed();
+        let ready = &mut self.ready;
+        let borrowed = &mut self.borrowed;
+        try_recv_from_borrowed(ready, borrowed);
         match self.ready.pop_front() {
             Some(item) => {
                 let (tx, rx) = futures_channel::oneshot::channel();
@@ -166,15 +165,55 @@ impl<T> Pool<T> {
         }
     }
 
+    /// Gets an item from the pool. If there is no item immediately available, this will wait
+    /// in a blocking manner until an item is available.
+    /// 
+    /// # Panic
+    /// 
+    /// This will panic if the sender is dropped before the item is returned to the pool, which
+    /// should never happen.
+    pub fn blocking_get(&mut self) -> PooledItem<'_, T> {
+        let ready = &mut self.ready;
+        let borrowed = &mut self.borrowed;
+
+        loop {
+            borrowed.retain_mut(|rx| match rx.try_recv() {
+                Ok(Some(item)) => {
+                    ready.push_back(item);
+                    false
+                },
+                Ok(None) => true,
+                Err(_) => {
+                    // Sender cannot be canceled, so this is unreachable.
+                    unreachable!("Sender has been dropped, so the item will no longer be returned back to the pool.")
+                },
+            });
+
+            match ready.pop_front() {
+                Some(item) => {
+                    let (tx, rx) = futures_channel::oneshot::channel();
+                    borrowed.push(rx);
+                    return PooledItem::<'_, T>::new(item, tx);
+                },
+                None => std::thread::yield_now(),
+            }
+        }
+    }
+
     /// Gets an item from the pool. If there is no item immediately available, the future
     /// will `.await` until one is available.
     ///
     /// # Panic
     ///
     /// This future will panic if any sender is dropped before the item is returned to the pool,
-    /// which should not happen.
+    /// which should never happen.
     pub fn get(&mut self) -> Get<'_, T> {
-        Get { pool: self }
+        let ready = &mut self.ready;
+        let borrowed = &mut self.borrowed;
+        Get { 
+            ready,
+            borrowed,
+        }
     }
 
     /// Puts an item into the pool
@@ -189,10 +228,13 @@ pin_project! {
     /// # Panic
     ///
     /// This future will panic if the sender is dropped before the item is
-    /// returned to the pool, which should not happen.
+    /// returned to the pool, which should never happen.
     pub struct Get<'a, T> {
         #[pin]
-        pool: &'a mut Pool<T>,
+        ready: &'a mut VecDeque<T>,
+
+        #[pin]
+        borrowed: &'a mut Vec<Receiver<T>>,
     }
 }
 
@@ -201,19 +243,13 @@ impl<'a, T> Future for Get<'a, T> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut this = self.project();
+        
+        let ready = &mut this.ready;
+        let borrowed = &mut this.borrowed;
 
-        this.pool.try_recv_from_borrowed();
-        if let Some(item) = this.pool.ready.pop_front() {
-            let (tx, rx) = futures_channel::oneshot::channel();
-            this.pool.borrowed.push(rx);
-            return Poll::Ready(PooledItem::<'a, T>::new(item, tx));
-        }
-
-        let mut ret = None;
-        this.pool.borrowed.retain_mut(|rx| match rx.poll_unpin(cx) {
+        borrowed.retain_mut(|rx| match rx.poll_unpin(cx) {
             Poll::Ready(Ok(item)) => {
-                let (tx, rx) = futures_channel::oneshot::channel();
-                ret = Some((PooledItem::<'a, T>::new(item, tx), rx));
+                ready.push_back(item);
                 false
             },
             Poll::Ready(Err(_canceled)) => {
@@ -223,10 +259,11 @@ impl<'a, T> Future for Get<'a, T> {
             Poll::Pending => true,
         });
 
-        match ret {
-            Some((item, rx)) => {
-                this.pool.borrowed.push(rx);
-                Poll::Ready(item)
+        match ready.pop_front() {
+            Some(item) => {
+                let (tx, rx) = futures_channel::oneshot::channel();
+                borrowed.push(rx);
+                return Poll::Ready(PooledItem::<'a, T>::new(item, tx));
             }
             None => Poll::Pending,
         }
