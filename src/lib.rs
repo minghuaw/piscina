@@ -66,10 +66,6 @@
 //!
 //! Instead of using an `Option`, this crate uses unsafe code `ManuallyDrop` in `PooledItem`.
 //! And the only use of unsafe code `ManuallyDrop::take()` occurs when `PooledItem` is dropped.
-//!
-//! # TODO:
-//!
-//! - [ ] Allow removal of items with `pop()` and `try_pop()` once an item becomes available
 
 #[macro_use]
 mod cfg;
@@ -145,7 +141,7 @@ impl<T> PooledItem<T> {
     }
 }
 
-/// Loop through all borrowed items and try to receive them. If the sender
+/// Iterate through all borrowed items and try to receive them. If the sender
 /// has been dropped, the item is no longer retrievable and is removed from
 /// the pool.
 fn try_recv_from_borrowed<T>(ready: &mut VecDeque<T>, borrowed: &mut Vec<Receiver<T>>) {
@@ -169,6 +165,45 @@ fn try_recv_from_borrowed<T>(ready: &mut VecDeque<T>, borrowed: &mut Vec<Receive
                 false
             }
         }
+    });
+}
+
+/// Iterate through all borrowed items and try to receive them. If the item is lost
+/// (ie. the sender has been dropped before it returned the item), panic.
+fn try_recv_from_borrowed_and_panic_if_lost<T>(
+    ready: &mut VecDeque<T>,
+    borrowed: &mut Vec<Receiver<T>>,
+) {
+    borrowed.retain_mut(|rx| match rx.try_recv() {
+        Ok(Some(item)) => {
+            ready.push_back(item);
+            false
+        },
+        Ok(None) => true,
+        Err(_) => {
+            // Sender cannot be canceled, so this is unreachable.
+            unreachable!("Sender has been dropped, so the item will no longer be returned back to the pool.")
+        },
+    });
+}
+
+/// Iterate and poll all borrowed items and retain the ones that are still pending
+/// and push the ones that are ready back into the ready queue.
+fn poll_all_borrowed_and_push_back_ready<T>(
+    ready: &mut VecDeque<T>,
+    borrowed: &mut Vec<Receiver<T>>,
+    cx: &mut Context<'_>,
+) {
+    borrowed.retain_mut(|rx| match rx.poll_unpin(cx) {
+        Poll::Ready(Ok(item)) => {
+            ready.push_back(item);
+            false
+        },
+        Poll::Ready(Err(_canceled)) => {
+            // Sender cannot be canceled, so this is unreachable.
+            unreachable!("Sender has been dropped, so the item will no longer be returned back to the pool.")
+        }
+        Poll::Pending => true,
     });
 }
 
@@ -222,6 +257,17 @@ impl<T> Pool<T> {
     ///
     /// Please note that if the sender is dropped before the item is returned to the pool, the
     /// item will be lost and this will be reflected on the pool's length.
+    /// 
+    /// # Example
+    /// 
+    /// ```
+    /// use piscina::Pool;
+    /// 
+    /// let mut pool = Pool::new();
+    /// pool.put(1);
+    /// let item = pool.try_get();
+    /// assert!(item.is_some());
+    /// ```
     pub fn try_get(&mut self) -> Option<PooledItem<T>> {
         let ready = &mut self.ready;
         let borrowed = &mut self.borrowed;
@@ -238,6 +284,16 @@ impl<T> Pool<T> {
 
     /// Gets an item from the pool. If there is no item immediately available, this will wait
     /// in a blocking manner until an item is available.
+    /// 
+    /// # Example
+    /// 
+    /// ```
+    /// use piscina::Pool;
+    /// 
+    /// let mut pool = Pool::new();
+    /// pool.put(1);
+    /// let item = pool.blocking_get();
+    /// ```
     ///
     /// # Panic
     ///
@@ -248,17 +304,7 @@ impl<T> Pool<T> {
         let borrowed = &mut self.borrowed;
 
         loop {
-            borrowed.retain_mut(|rx| match rx.try_recv() {
-                Ok(Some(item)) => {
-                    ready.push_back(item);
-                    false
-                },
-                Ok(None) => true,
-                Err(_) => {
-                    // Sender cannot be canceled, so this is unreachable.
-                    unreachable!("Sender has been dropped, so the item will no longer be returned back to the pool.")
-                },
-            });
+            try_recv_from_borrowed_and_panic_if_lost(ready, borrowed);
 
             match ready.pop_front() {
                 Some(item) => {
@@ -274,6 +320,18 @@ impl<T> Pool<T> {
     /// Gets an item from the pool. If there is no item immediately available, the future
     /// will `.await` until one is available.
     ///
+    /// # Example
+    /// 
+    /// ```
+    /// use piscina::Pool;
+    /// 
+    /// let mut pool = Pool::new();
+    /// pool.put(1);
+    /// futures::executor::block_on(async {
+    ///     let item = pool.get().await;
+    /// });
+    /// ```
+    /// 
     /// # Panic
     ///
     /// This future will panic if any sender is dropped before the item is returned to the pool,
@@ -285,8 +343,101 @@ impl<T> Pool<T> {
     }
 
     /// Puts an item into the pool
+    /// 
+    /// # Example
+    /// 
+    /// ```
+    /// use piscina::Pool;
+    /// 
+    /// let mut pool = Pool::new();
+    /// pool.put(1);
+    /// ```
     pub fn put(&mut self, item: T) {
         self.ready.push_back(item);
+    }
+
+    /// Tries to pop an item from the pool. Returns `None` if there is no item immediately available.
+    /// 
+    /// Please note that if the sender is dropped before the item is returned to the pool, the
+    /// item will be lost and this will be reflected on the pool's length.
+    /// 
+    /// # Example
+    /// 
+    /// ```
+    /// use piscina::Pool;
+    /// 
+    /// let mut pool = Pool::new();
+    /// pool.put(1);
+    /// assert_eq!(pool.len(), 1);
+    /// let item = pool.try_pop();
+    /// assert!(item.is_some());
+    /// assert_eq!(pool.len(), 0);
+    /// ```
+    pub fn try_pop(&mut self) -> Option<T> {
+        let ready = &mut self.ready;
+        let borrowed = &mut self.borrowed;
+        try_recv_from_borrowed(ready, borrowed);
+        self.ready.pop_front()
+    }
+
+    /// Pops an item from the pool. If there is no item immediately available, this will wait
+    /// in a blocking manner until an item is available.
+    /// 
+    /// # Example
+    /// 
+    /// ```
+    /// use piscina::Pool;
+    /// 
+    /// let mut pool = Pool::new();
+    /// pool.put(1);
+    /// assert_eq!(pool.len(), 1);
+    /// let item = pool.blocking_pop();
+    /// assert_eq!(pool.len(), 0);
+    /// ```
+    /// 
+    /// # Panic
+    /// 
+    /// This will panic if the sender is dropped before the item is returned to the pool, which
+    /// should never happen.
+    pub fn blocking_pop(&mut self) -> T {
+        let ready = &mut self.ready;
+        let borrowed = &mut self.borrowed;
+
+        loop {
+            try_recv_from_borrowed_and_panic_if_lost(ready, borrowed);
+
+            match ready.pop_front() {
+                Some(item) => return item,
+                None => std::thread::yield_now(),
+            }
+        }
+    }
+
+    /// Pops an item from the pool. If there is no item immediately available, this will wait
+    /// in a blocking manner until an item is available.
+    /// 
+    /// # Example
+    /// 
+    /// ```
+    /// use piscina::Pool;
+    /// 
+    /// let mut pool = Pool::new();
+    /// pool.put(1);
+    /// assert_eq!(pool.len(), 1);
+    /// futures::executor::block_on(async {
+    ///    let item = pool.pop().await;
+    ///    assert_eq!(pool.len(), 0);
+    /// });
+    /// ```
+    /// 
+    /// # Panic
+    /// 
+    /// This will panic if the sender is dropped before the item is returned to the pool, which
+    /// should never happen.
+    pub fn pop(&mut self) -> Pop<'_, T> {
+        let ready = &mut self.ready;
+        let borrowed = &mut self.borrowed;
+        Pop { ready, borrowed }
     }
 }
 
@@ -315,17 +466,7 @@ impl<'a, T> Future for Get<'a, T> {
         let ready = &mut this.ready;
         let borrowed = &mut this.borrowed;
 
-        borrowed.retain_mut(|rx| match rx.poll_unpin(cx) {
-            Poll::Ready(Ok(item)) => {
-                ready.push_back(item);
-                false
-            },
-            Poll::Ready(Err(_canceled)) => {
-                // Sender cannot be canceled, so this is unreachable.
-                unreachable!("Sender has been dropped, so the item will no longer be returned back to the pool.")
-            }
-            Poll::Pending => true,
-        });
+        poll_all_borrowed_and_push_back_ready(ready, borrowed, cx);
 
         match ready.pop_front() {
             Some(item) => {
@@ -333,6 +474,34 @@ impl<'a, T> Future for Get<'a, T> {
                 borrowed.push(rx);
                 Poll::Ready(PooledItem::new(item, tx))
             }
+            None => Poll::Pending,
+        }
+    }
+}
+
+pin_project! {
+    pub struct Pop<'a, T> {
+        #[pin]
+        ready: &'a mut VecDeque<T>,
+
+        #[pin]
+        borrowed: &'a mut Vec<Receiver<T>>,
+    }
+}
+
+impl<'a, T> Future for Pop<'a, T> {
+    type Output = T;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut this = self.project();
+
+        let ready = &mut this.ready;
+        let borrowed = &mut this.borrowed;
+
+        poll_all_borrowed_and_push_back_ready(ready, borrowed, cx);
+
+        match ready.pop_front() {
+            Some(item) => Poll::Ready(item),
             None => Poll::Pending,
         }
     }
@@ -454,6 +623,21 @@ mod tests {
         assert_eq!(*pool.blocking_get(), 1);
     }
 
+    #[test]
+    fn try_pop_from_empty_pool_returns_none() {
+        let mut pool = Pool::<i32>::new();
+        assert_none!(pool.try_pop());
+    }
+
+    #[test]
+    fn try_pop_reduce_len_by_one() {
+        let mut pool = Pool::new();
+        pool.put(1);
+        assert_eq!(pool.len(), 1);
+        assert_some!(pool.try_pop());
+        assert_eq!(pool.len(), 0);
+    }
+
     #[futures_test::test]
     async fn poll_get_from_empty_pool_returns_pending() {
         let mut pool = Pool::<i32>::new();
@@ -498,5 +682,44 @@ mod tests {
 
         pool.put(2);
         assert_ready!(pool.get());
+    }
+
+    #[futures_test::test]
+    async fn poll_pop_from_empty_pool_returns_pending() {
+        let mut pool = Pool::<i32>::new();
+        assert_pending!(pool.pop());
+    }
+
+    #[futures_test::test]
+    async fn poll_pop_reduce_len_by_one() {
+        let mut pool = Pool::new();
+        pool.put(1);
+        assert_eq!(pool.len(), 1);
+        assert_ready!(pool.pop());
+        assert_eq!(pool.len(), 0);
+    }
+
+    #[futures_test::test]
+    async fn poll_pop_from_pool_of_one_item_returns_ready() {
+        let mut pool = Pool::new();
+        pool.put(1);
+        assert_ready!(pool.pop());
+    }
+
+    #[futures_test::test]
+    async fn poll_pop_from_exhausted_pool_returns_pending() {
+        let mut pool = Pool::new();
+        pool.put(1);
+        let _item = assert_ready!(pool.pop());
+        assert_pending!(pool.pop());
+    }
+
+    #[futures_test::test]
+    async fn poll_pop_after_dropping_borrowed_item_returns_pending() {
+        let mut pool = Pool::new();
+        pool.put(1);
+        let item = assert_ready!(pool.pop());
+        drop(item);
+        assert_pending!(pool.pop());
     }
 }

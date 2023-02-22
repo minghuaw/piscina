@@ -69,8 +69,4 @@ futures::executor::block_on(async {
 Instead of using an `Option`, this crate uses unsafe code `ManuallyDrop` in `PooledItem`.
 And the only use of unsafe code `ManuallyDrop::take()` occurs when `PooledItem` is dropped.
 
-## TODO:
-
-- [ ] Allow removal of items with `pop()` and `try_pop()` once an item becomes available
-
 License: MIT/Apache-2.0
