@@ -139,6 +139,16 @@ impl<T> PooledItem<T> {
             sender: ManuallyDrop::new(sender),
         }
     }
+
+    /// Get a reference to the item
+    pub fn item(&self) -> &T {
+        &self.item
+    }
+
+    /// Get a mutable reference to the item
+    pub fn item_mut(&mut self) -> &mut T {
+        &mut self.item
+    }
 }
 
 /// Iterate through all borrowed items and try to receive them. If the sender

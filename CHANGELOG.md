@@ -1,5 +1,10 @@
 # CHANGELOG
 
+## 0.1.2 - 2023-Feb-21
+
+- Added explicity getters `PooledItem::item()` and `PooledItem::item_mut()` which
+  are the same as `Deref` and `DerefMut` impls, respectively.
+
 ## 0.1.1 - 2023-Feb-21
 
 - Added `try_pop()`, `blocking_pop`, and `pop()` methods
