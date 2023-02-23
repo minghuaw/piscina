@@ -4,7 +4,7 @@
 //! A simple generic pool that supports both sync and async.
 //!
 //! [![crate_version](https://img.shields.io/crates/v/piscina.svg?style=flat)](https://crates.io/crates/piscina)
-//! [![docs_version](https://img.shields.io/badge/docs-latest-blue.svg?style=flat)](https://docs.rs/fe2o3-amqp/latest/piscina/)
+//! [![docs_version](https://img.shields.io/badge/docs-latest-blue.svg?style=flat)](https://docs.rs/piscina/latest/piscina/)
 //!
 //! Two types of pools are provided:
 //! 

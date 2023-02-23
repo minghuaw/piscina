@@ -1,5 +1,9 @@
 # CHANGELOG
 
+## 0.2.1 - 2023-Feb-22
+
+- Fixed wrong url in README
+
 ## 0.2.0 - 2023-Feb-22
 
 - Added `PriorityPool`
