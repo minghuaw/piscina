@@ -7,7 +7,7 @@ license = "MIT/Apache-2.0"
 documentation = "https://docs.rs/piscina/"
 homepage = "https://github.com/minghuaw/piscina"
 repository = "https://github.com/minghuaw/piscina"
-keywords = ["pool", "async"]
+keywords = ["pool", "async", "priority"]
 readme = "README.md"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
