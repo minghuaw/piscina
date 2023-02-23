@@ -8,6 +8,8 @@ use pin_project_lite::pin_project;
 use crate::internal::{try_recv_from_borrowed, try_recv_from_borrowed_and_panic_if_lost, poll_all_borrowed_and_push_back_ready};
 
 /// An item that is borrowed from a [`PriorityPool`].
+/// 
+/// Dropping this item will return it to the pool.
 pub struct PooledItem<T, P> {
     /// The item.
     item: ManuallyDrop<T>,
@@ -155,6 +157,62 @@ impl<T, P> PriorityItem<T, P> {
 /// 
 /// * `T`: The type of the items.
 /// * `P`: The type of the priority.
+/// 
+/// # Examples
+/// 
+/// Non-async example:
+/// 
+/// ```
+/// use piscina::PriorityPool;
+/// 
+/// let mut pool = PriorityPool::new();
+/// pool.put("hello", 1);
+/// pool.put("world", 2); // Larger value means higher priority.
+/// 
+/// // Get the highest priority item.
+/// let item = pool.try_get();
+/// assert!(item.is_some());
+/// let item = item.unwrap();
+/// assert_eq!(item.item(), &"world");
+/// 
+/// let another_item = pool.try_get();
+/// assert!(another_item.is_some());
+/// let another_item = another_item.unwrap();
+/// assert_eq!(another_item.item(), &"hello");
+/// 
+/// // The pool is now empty.
+/// let empty_item = pool.try_get();
+/// assert!(empty_item.is_none());
+/// 
+/// drop(another_item); // Return the item back to the pool by dropping it.
+/// let hello = pool.try_get();
+/// assert!(hello.is_some());
+/// assert_eq!(hello.unwrap().item(), &"hello");
+/// ```
+/// 
+/// Async example:
+/// 
+/// ```
+/// use piscina::PriorityPool;
+/// 
+/// let mut pool = PriorityPool::new();
+/// pool.put("hello", 1);
+/// pool.put("world", 2); // Larger value means higher priority.
+/// 
+/// futures::executor::block_on(async {
+///     // Get the highest priority item.
+///     let world = pool.get().await;
+///     assert_eq!(world.item(), &"world"); 
+///
+///     let hello = pool.get().await;
+///     assert_eq!(hello.item(), &"hello");
+/// 
+///     // The pool is now empty.
+///     drop(hello); // Return the item back to the pool by dropping it.
+///     let item = pool.get().await;
+///     assert_eq!(item.item(), &"hello"); 
+/// });
+/// ```
 #[derive(Debug)]
 pub struct PriorityPool<T, P> 
 where

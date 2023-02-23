@@ -111,7 +111,7 @@ impl<T> PooledItem<T> {
 /// let none = pool.try_get();
 /// assert!(none.is_none());
 ///
-/// drop(item1);
+/// drop(item1); // Return the item to the pool by dropping it
 /// let item3 = pool.try_get();
 /// assert!(item3.is_some());
 /// ```
@@ -132,7 +132,7 @@ impl<T> PooledItem<T> {
 ///     let none = pool.try_get();
 ///     assert!(none.is_none());
 ///
-///     drop(item1);
+///     drop(item1); // Return the item to the pool by dropping it
 ///     let item3 = pool.get().await;
 /// });
 /// ```
