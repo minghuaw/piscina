@@ -26,8 +26,103 @@
 //!
 //! # Examples
 //!
-//! Please see [`Pool`] and [`PriorityPool`] for examples.
+//! Non-async [`Pool`] example:
 //!
+//! ```rust
+//! use piscina::Pool;
+//!
+//! let mut pool = Pool::new();
+//! pool.put(1);
+//! pool.put(2);
+//!
+//! let item1 = pool.try_get();
+//! assert!(item1.is_some());
+//!
+//! let item2 = pool.blocking_get();
+//!
+//! let none = pool.try_get();
+//! assert!(none.is_none());
+//!
+//! drop(item1); // Return the item to the pool by dropping it
+//! let item3 = pool.try_get();
+//! assert!(item3.is_some());
+//! ```
+//!
+//! Async [`Pool`] example:
+//!
+//! ```rust
+//! use piscina::Pool;
+//!
+//! futures::executor::block_on(async {
+//!     let mut pool = Pool::new();
+//!     pool.put(1);
+//!     pool.put(2);
+//!
+//!     let item1 = pool.get().await;
+//!     let item2 = pool.get().await;
+//!
+//!     let none = pool.try_get();
+//!     assert!(none.is_none());
+//!
+//!     drop(item1); // Return the item to the pool by dropping it
+//!     let item3 = pool.get().await;
+//! });
+//! ```
+//!
+//! Non-async [`PriorityPool`] example:
+//! 
+//! ```
+//! use piscina::PriorityPool;
+//! 
+//! let mut pool = PriorityPool::new();
+//! pool.put("hello", 1);
+//! pool.put("world", 2); // Larger value means higher priority.
+//! 
+//! // Get the highest priority item.
+//! let item = pool.try_get();
+//! assert!(item.is_some());
+//! let item = item.unwrap();
+//! assert_eq!(item.item(), &"world");
+//! 
+//! let another_item = pool.try_get();
+//! assert!(another_item.is_some());
+//! let another_item = another_item.unwrap();
+//! assert_eq!(another_item.item(), &"hello");
+//! 
+//! // The pool is now empty.
+//! let empty_item = pool.try_get();
+//! assert!(empty_item.is_none());
+//! 
+//! drop(another_item); // Return the item back to the pool by dropping it.
+//! let hello = pool.try_get();
+//! assert!(hello.is_some());
+//! assert_eq!(hello.unwrap().item(), &"hello");
+//! ```
+//! 
+//! Async [`PriorityPool`] example:
+//! 
+//! ```
+//! use piscina::PriorityPool;
+//! 
+//! let mut pool = PriorityPool::new();
+//! pool.put("hello", 1);
+//! pool.put("world", 2); // Larger value means higher priority.
+//! 
+//! futures::executor::block_on(async {
+//!     // Get the highest priority item.
+//!     let world = pool.get().await;
+//!     assert_eq!(world.item(), &"world"); 
+//!
+//!     let hello = pool.get().await;
+//!     assert_eq!(hello.item(), &"hello");
+//! 
+//!     // The pool is now empty.
+//!     drop(hello); // Return the item back to the pool by dropping it.
+//!     let item = pool.get().await;
+//!     assert_eq!(item.item(), &"hello"); 
+//! });
+//! ```
+//! 
 //! # Safety
 //!
 //! Instead of using an `Option`, this crate uses unsafe code `ManuallyDrop` in `PooledItem`.

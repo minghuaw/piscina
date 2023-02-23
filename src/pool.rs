@@ -1,4 +1,4 @@
-//! A regular pool
+//! Regular pool
 
 use std::{
     collections::VecDeque,
