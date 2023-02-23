@@ -25,6 +25,12 @@ pub struct PooledItem<T> {
     sender: ManuallyDrop<Sender<T>>,
 }
 
+impl<T: std::fmt::Debug> std::fmt::Debug for PooledItem<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PooledItem").field("item", &self.item).finish()
+    }
+}
+
 impl<T> Deref for PooledItem<T> {
     type Target = T;
 
@@ -85,6 +91,51 @@ impl<T> PooledItem<T> {
 /// A pool of generic items
 ///
 /// Internally it maintains two lists: one of ready items and one of borrowed
+/// 
+/// # Examples
+///
+/// Non-async [`Pool`] example:
+///
+/// ```rust
+/// use piscina::Pool;
+///
+/// let mut pool = Pool::new();
+/// pool.put(1);
+/// pool.put(2);
+///
+/// let item1 = pool.try_get();
+/// assert!(item1.is_some());
+///
+/// let item2 = pool.blocking_get();
+///
+/// let none = pool.try_get();
+/// assert!(none.is_none());
+///
+/// drop(item1);
+/// let item3 = pool.try_get();
+/// assert!(item3.is_some());
+/// ```
+///
+/// Async [`Pool`] example:
+///
+/// ```rust
+/// use piscina::Pool;
+///
+/// futures::executor::block_on(async {
+///     let mut pool = Pool::new();
+///     pool.put(1);
+///     pool.put(2);
+///
+///     let item1 = pool.get().await;
+///     let item2 = pool.get().await;
+///
+///     let none = pool.try_get();
+///     assert!(none.is_none());
+///
+///     drop(item1);
+///     let item3 = pool.get().await;
+/// });
+/// ```
 #[derive(Debug, Default)]
 pub struct Pool<T> {
     /// List of ready items
@@ -244,6 +295,7 @@ impl<T> Pool<T> {
     /// let mut pool = Pool::new();
     /// pool.put(1);
     /// assert_eq!(pool.len(), 1);
+    /// 
     /// let item = pool.try_pop();
     /// assert!(item.is_some());
     /// assert_eq!(pool.len(), 0);
@@ -355,6 +407,13 @@ impl<'a, T> Future for Get<'a, T> {
 }
 
 pin_project! {
+    /// A future that resolves to an item removed from the pool.
+    /// 
+    /// # Panic
+    /// 
+    /// This future will panic if the sender is dropped before the item is
+    /// returned to the pool, which should never happen.
+    #[derive(Debug)]
     pub struct Pop<'a, T> {
         #[pin]
         ready: &'a mut VecDeque<T>,

@@ -1,3 +1,6 @@
+#![deny(missing_docs, missing_debug_implementations)]
+#![warn(clippy::unused_async)]
+
 //! A simple generic pool that supports both sync and async.
 //!
 //! [![crate_version](https://img.shields.io/crates/v/piscina.svg?style=flat)](https://crates.io/crates/piscina)
@@ -19,7 +22,7 @@
 //!
 //! # Examples
 //!
-//! Non-async example:
+//! Non-async [`Pool`] example:
 //!
 //! ```rust
 //! use piscina::Pool;
@@ -41,7 +44,7 @@
 //! assert!(item3.is_some());
 //! ```
 //!
-//! Async example:
+//! Async [`Pool`] example:
 //!
 //! ```rust
 //! use piscina::Pool;

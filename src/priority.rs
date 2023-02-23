@@ -19,6 +19,19 @@ pub struct PooledItem<T, P> {
     sender: ManuallyDrop<Sender<PriorityItem<T, P>>>,
 }
 
+impl<T, P> std::fmt::Debug for PooledItem<T, P> 
+where
+    T: std::fmt::Debug,
+    P: std::fmt::Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PooledItem")
+            .field("item", &self.item)
+            .field("priority", &self.priority)
+            .finish()
+    }
+}
+
 impl<T, P> Deref for PooledItem<T, P> {
     type Target = T;
 
@@ -68,23 +81,28 @@ impl<T, P> PooledItem<T, P> {
         }
     }
 
+    /// Returns a reference to the item.
     pub fn item(&self) -> &T {
         &self.item
     }
 
+    /// Returns a mutable reference to the item.
     pub fn item_mut(&mut self) -> &mut T {
         &mut self.item
     }
 
+    /// Returns a reference to the priority.
     pub fn priority(&self) -> &P {
         &self.priority
     }
 
+    /// Returns a mutable reference to the priority.
     pub fn priority_mut(&mut self) -> &mut P {
         &mut self.priority
     }
 }
 
+#[derive(Debug)]
 struct PriorityItem<T, P> {
     priority: P,
     item: T,
@@ -137,6 +155,7 @@ impl<T, P> PriorityItem<T, P> {
 /// 
 /// * `T`: The type of the items.
 /// * `P`: The type of the priority.
+#[derive(Debug)]
 pub struct PriorityPool<T, P> 
 where
     P: Ord,
@@ -189,6 +208,22 @@ where
         self.ready.push(PriorityItem::new(item, priority));
     }
 
+    /// Tries to get the highest priority item that is immediately available from the
+    /// [`PriorityPool`]. Returns `None` if the pool is empty.
+    /// 
+    /// Please note that if the sender is dropped before returning the item to the pool, the item
+    /// will be lost and this will be reflected in the pool's length.
+    /// 
+    /// # Example
+    /// 
+    /// ```
+    /// use piscina::PriorityPool;
+    /// 
+    /// let mut pool = PriorityPool::new();
+    /// pool.put("hello", 1);
+    /// let item = pool.try_get();
+    /// assert!(item.is_some());
+    /// ```
     pub fn try_get(&mut self) -> Option<PooledItem<T, P>> {
         let ready = &mut self.ready;
         let borrowed = &mut self.borrowed;
@@ -203,6 +238,23 @@ where
         }
     }
 
+    /// Gets the highest priority item that is available from the [`PriorityPool`]. If there is no
+    /// item immediately available, this will wait in a blocking manner until an item is available.
+    /// 
+    /// # Example
+    /// 
+    /// ```
+    /// use piscina::PriorityPool;
+    /// 
+    /// let mut pool = PriorityPool::new();
+    /// pool.put("hello", 1);
+    /// let item = pool.blocking_get();
+    /// ```
+    /// 
+    /// # Panic
+    /// 
+    /// This will panic if the sender is dropped before returning the item to the pool, which should
+    /// never happen.
     pub fn blocking_get(&mut self) -> PooledItem<T, P> {
         let ready = &mut self.ready;
         let borrowed = &mut self.borrowed;
@@ -221,10 +273,48 @@ where
         }
     }
 
+    /// Gets the highest priority item that is available from the [`PriorityPool`]. If there is no
+    /// item immediately available, this will `.await` until one becomes available.
+    /// 
+    /// # Example
+    /// 
+    /// ```
+    /// use piscina::PriorityPool;
+    /// 
+    /// let mut pool = PriorityPool::new();
+    /// pool.put("hello", 1);
+    /// futures::executor::block_on(async {
+    ///    let item = pool.get().await;
+    /// });
+    /// ```
+    /// 
+    /// # Panic
+    /// 
+    /// This will panic if the sender is dropped before returning the item to the pool, which should
+    /// never happen.
     pub fn get(&mut self) -> Get<'_, T, P> {
         Get { ready: &mut self.ready, borrowed: &mut self.borrowed }
     }
 
+    /// Tries to remove the highest priority item that is immediately available from the
+    /// [`PriorityPool`]. Returns `None` if the pool is empty.
+    /// 
+    /// Please note that if the sender is dropped before returning the item to the pool, the item
+    /// will be lost and this will be reflected in the pool's length.
+    /// 
+    /// # Example
+    /// 
+    /// ```
+    /// use piscina::PriorityPool;
+    /// 
+    /// let mut pool = PriorityPool::new();
+    /// pool.put("hello", 1);
+    /// assert_eq!(pool.len(), 1);
+    /// 
+    /// let item = pool.try_pop();
+    /// assert!(item.is_some());
+    /// assert_eq!(pool.len(), 0);
+    /// ```
     pub fn try_pop(&mut self) -> Option<(T, P)> {
         let ready = &mut self.ready;
         let borrowed = &mut self.borrowed;
@@ -232,6 +322,27 @@ where
         ready.pop().map(|PriorityItem { item, priority }| (item, priority))
     }
 
+    /// Removes the highest priority item that is available from the [`PriorityPool`]. If there is
+    /// no item immediately available, this will wait in a blocking manner until an item is
+    /// available.
+    /// 
+    /// # Example
+    /// 
+    /// ```
+    /// use piscina::PriorityPool;
+    /// 
+    /// let mut pool = PriorityPool::new();
+    /// pool.put("hello", 1);
+    /// assert_eq!(pool.len(), 1);
+    /// 
+    /// let item = pool.blocking_pop();
+    /// assert_eq!(pool.len(), 0);
+    /// ```
+    /// 
+    /// # Panic
+    /// 
+    /// This will panic if the sender is dropped before returning the item to the pool, which should
+    /// never happen.
     pub fn blocking_pop(&mut self) -> (T, P) {
         let ready = &mut self.ready;
         let borrowed = &mut self.borrowed;
@@ -246,12 +357,30 @@ where
         }
     }
 
+    /// Removes the highest priority item that is available from the [`PriorityPool`]. If there is
+    /// no item immediately available, this will `.await` until one becomes available.
+    /// 
+    /// # Example
+    /// 
+    /// ```
+    /// use piscina::PriorityPool;
+    ///   
+    /// let mut pool = PriorityPool::new();
+    /// pool.put("hello", 1);
+    /// assert_eq!(pool.len(), 1);
+    /// 
+    /// futures::executor::block_on(async {
+    ///    let item = pool.pop().await;
+    ///    assert_eq!(pool.len(), 0);
+    /// });
+    /// ```
     pub fn pop(&mut self) -> Pop<'_, T, P> {
         Pop { ready: &mut self.ready, borrowed: &mut self.borrowed }
     }
 }
 
 pin_project! {
+    /// A future that resolves to a [`PooledItem`] from a [`PriorityPool`].
     pub struct Get<'a, T, P> {
         #[pin]
         ready: &'a mut BinaryHeap<PriorityItem<T, P>>,
@@ -286,6 +415,7 @@ where
 }
 
 pin_project! {
+    /// A future that resolves to a removed item from a [`PriorityPool`].
     pub struct Pop<'a, T, P> {
         #[pin]
         ready: &'a mut BinaryHeap<PriorityItem<T, P>>,
