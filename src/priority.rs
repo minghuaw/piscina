@@ -67,6 +67,22 @@ impl<T, P> PooledItem<T, P> {
             sender: ManuallyDrop::new(sender),
         }
     }
+
+    pub fn item(&self) -> &T {
+        &self.item
+    }
+
+    pub fn item_mut(&mut self) -> &mut T {
+        &mut self.item
+    }
+
+    pub fn priority(&self) -> &P {
+        &self.priority
+    }
+
+    pub fn priority_mut(&mut self) -> &mut P {
+        &mut self.priority
+    }
 }
 
 struct PriorityItem<T, P> {
@@ -113,6 +129,9 @@ impl<T, P> PriorityItem<T, P> {
 }
 
 /// A pool that can be used to borrow items with a priority.
+/// 
+/// This internally uses a [`BinaryHeap`] which is a max-heap. 
+/// This means that the item with the highest priority will be returned first.
 /// 
 /// # Type parameters
 /// 
@@ -302,9 +321,336 @@ mod tests {
     use crate::test_util::*;
 
     #[test]
+    fn create_priority_pool() {
+        let pool = PriorityPool::<String, u32>::new();
+        assert_eq!(pool.len(), 0);
+    }
+
+    #[test]
     fn create_priority_pool_with_capacity() {
         let pool = PriorityPool::<String, u32>::with_capacity(10);
         assert_eq!(pool.len(), 0);
     }
 
+    #[test]
+    fn pool_len_does_not_change_after_borrowing_item() {
+        let mut pool = PriorityPool::<&str, u32>::new();
+        pool.put("hello", 1);
+        assert_eq!(pool.len(), 1);
+        let _item = pool.blocking_get();
+        assert_eq!(pool.len(), 1);
+    }
+
+    #[test]
+    fn try_get_from_empty_pool_returns_none() {
+        let mut pool = PriorityPool::<&str, u32>::new();
+        assert_none!(pool.try_get());
+    }
+
+    #[test]
+    fn try_get_from_non_empty_pool_returns_some() {
+        let mut pool = PriorityPool::<&str, u32>::new();
+        pool.put("hello", 1);
+        assert_some!(pool.try_get());
+    }
+
+    #[test]
+    fn try_get_after_dropping_borrowed_item_returns_some() {
+        let mut pool = PriorityPool::<&str, u32>::new();
+        pool.put("hello", 1);
+        let item = pool.blocking_get();
+        drop(item);
+        assert_some!(pool.try_get());
+    }
+
+    #[test]
+    fn try_get_after_dropping_borrowed_item_and_putting_new_item_returns_some() {
+        let mut pool = PriorityPool::<&str, u32>::new();
+        assert_none!(pool.try_get());
+        
+        pool.put("hello", 1);
+        let item = assert_some!(pool.try_get());
+        assert_none!(pool.try_get());
+
+        drop(item);
+        assert_some!(pool.try_get());
+
+        pool.put("world", 1);
+        assert_some!(pool.try_get());
+    }
+
+    #[test]
+    fn try_get_returns_highest_priority_item() {
+        let mut pool = PriorityPool::<&str, u32>::new();
+        pool.put("hello", 5);
+        pool.put("world", 6);
+        pool.put("foo", 4);
+        pool.put("bar", 3);
+
+        let item = assert_some!(pool.try_get());
+        assert_eq!(item.item(), &"world");
+
+        let item = assert_some!(pool.try_get());
+        assert_eq!(item.item(), &"hello");
+
+        let item = assert_some!(pool.try_get());
+        assert_eq!(item.item(), &"foo");
+
+        let item = assert_some!(pool.try_get());
+        assert_eq!(item.item(), &"bar");
+    }
+
+    #[test]
+    fn try_get_after_dropping_borrowed_item_returns_highest_priority_item() {
+        let mut pool = PriorityPool::<&str, u32>::new();
+        pool.put("hello", 5);
+        pool.put("world", 6);
+        pool.put("foo", 4);
+        pool.put("bar", 3);
+
+        let world = assert_some!(pool.try_get());
+        assert_eq!(world.item(), &"world");
+
+        let hello = assert_some!(pool.try_get());
+        assert_eq!(hello.item(), &"hello");
+
+        drop(world);
+        let next_item = assert_some!(pool.try_get());
+        assert_eq!(next_item.item(), &"world");
+
+        let item = assert_some!(pool.try_get());
+        assert_eq!(item.item(), &"foo");
+
+        drop(hello);
+        let next_item = assert_some!(pool.try_get());
+        assert_eq!(next_item.item(), &"hello");
+
+        let item = assert_some!(pool.try_get());
+        assert_eq!(item.item(), &"bar");
+    }
+
+    #[test]
+    fn blocking_get_from_non_empty_pool_returns_item() {
+        let mut pool = PriorityPool::<&str, u32>::new();
+        pool.put("hello", 1);
+        let item = pool.blocking_get();
+        assert_eq!(item.item(), &"hello");
+    }
+
+    #[test]
+    fn try_pop_from_empty_pool_returns_none() {
+        let mut pool = PriorityPool::<&str, u32>::new();
+        assert_none!(pool.try_pop());
+    }
+
+    #[test]
+    fn try_pop_reduce_len_by_one() {
+        let mut pool = PriorityPool::<&str, u32>::new();
+        pool.put("hello", 1);
+        assert_some!(pool.try_pop());
+        assert_eq!(pool.len(), 0);
+    }
+
+    #[test]
+    fn try_pop_highest_priority_item() {
+        let mut pool = PriorityPool::<&str, u32>::new();
+        pool.put("hello", 5);
+        pool.put("world", 6);
+        pool.put("foo", 4);
+        pool.put("bar", 3);
+
+        let (item, _) = assert_some!(pool.try_pop());
+        assert_eq!(item, "world");
+
+        let (item, _) = assert_some!(pool.try_pop());
+        assert_eq!(item, "hello");
+
+        let (item, _) = assert_some!(pool.try_pop());
+        assert_eq!(item, "foo");
+
+        let (item, _) = assert_some!(pool.try_pop());
+        assert_eq!(item, "bar");
+    }
+
+    #[test]
+    fn try_pop_after_dropping_borrowed_item_returns_highest_priority_item() {
+        let mut pool = PriorityPool::<&str, u32>::new();
+        pool.put("hello", 5);
+        pool.put("world", 6);
+        pool.put("foo", 4);
+        pool.put("bar", 3);
+
+        let world = assert_some!(pool.try_get());
+        assert_eq!(world.item(), &"world");
+
+        let hello = assert_some!(pool.try_get());
+        assert_eq!(hello.item(), &"hello");
+
+        drop(world);
+        let (next_item, _) = assert_some!(pool.try_pop());
+        assert_eq!(next_item, "world");
+
+        let (item, _) = assert_some!(pool.try_pop());
+        assert_eq!(item, "foo");
+
+        drop(hello);
+        let (next_item, _) = assert_some!(pool.try_pop());
+        assert_eq!(next_item, "hello");
+
+        let (item, _) = assert_some!(pool.try_pop());
+        assert_eq!(item, "bar");
+    }
+    
+    #[futures_test::test]
+    async fn poll_get_from_empty_pool_returns_pending() {
+        let mut pool = PriorityPool::<&str, u32>::new();
+        assert_pending!(pool.get());
+    }
+
+    #[futures_test::test]
+    async fn poll_get_from_pool_of_one_item_returns_ready() {
+        let mut pool = PriorityPool::<&str, u32>::new();
+        pool.put("hello", 1);
+        let item = assert_ready!(pool.get());
+        assert_eq!(item.item(), &"hello");
+    }
+
+    #[futures_test::test]
+    async fn poll_get_from_exhausted_pool_returns_pending() {
+        let mut pool = PriorityPool::<&str, u32>::new();
+        pool.put("hello", 1);
+        let item = assert_ready!(pool.get());
+        assert_eq!(item.item(), &"hello");
+        assert_pending!(pool.get());
+    }
+
+    #[futures_test::test]
+    async fn poll_get_after_dropping_borrowed_item_returns_ready() {
+        let mut pool = PriorityPool::<&str, u32>::new();
+        pool.put("hello", 1);
+        let item = assert_ready!(pool.get());
+        drop(item);
+        let item = assert_ready!(pool.get());
+        assert_eq!(item.item(), &"hello");
+    }
+
+    #[futures_test::test]
+    async fn poll_get_after_dropping_borrowed_item_and_putting_new_item_returns_ready() {
+        let mut pool = PriorityPool::<&str, u32>::new();
+        assert_pending!(pool.get());
+
+        pool.put("hello", 1);
+        let item = assert_ready!(pool.get());
+        assert_pending!(pool.get());
+
+        drop(item);
+        let item = assert_ready!(pool.get());
+        assert_eq!(item.item(), &"hello");
+
+        pool.put("world", 1);
+        let item = assert_ready!(pool.get());
+        assert_eq!(item.item(), &"world");
+    }
+
+    #[futures_test::test]
+    async fn poll_get_returns_highest_priority_item() {
+        let mut pool = PriorityPool::<&str, u32>::new();
+        pool.put("hello", 5);
+        pool.put("world", 6);
+        pool.put("foo", 4);
+        pool.put("bar", 3);
+
+        let item = assert_ready!(pool.get());
+        assert_eq!(item.item(), &"world");
+
+        let item = assert_ready!(pool.get());
+        assert_eq!(item.item(), &"hello");
+
+        let item = assert_ready!(pool.get());
+        assert_eq!(item.item(), &"foo");
+
+        let item = assert_ready!(pool.get());
+        assert_eq!(item.item(), &"bar");
+    }
+
+    #[futures_test::test]
+    async fn poll_get_after_dropping_borrowed_item_returns_highest_priority_item() {
+        let mut pool = PriorityPool::<&str, u32>::new();
+        pool.put("hello", 5);
+        pool.put("world", 6);
+        pool.put("foo", 4);
+        pool.put("bar", 3);
+
+        let world = assert_ready!(pool.get());
+        assert_eq!(world.item(), &"world");
+
+        let hello = assert_ready!(pool.get());
+        assert_eq!(hello.item(), &"hello");
+
+        drop(world);
+        let next_item = assert_ready!(pool.get());
+        assert_eq!(next_item.item(), &"world");
+
+        let item = assert_ready!(pool.get());
+        assert_eq!(item.item(), &"foo");
+
+        drop(hello);
+        let next_item = assert_ready!(pool.get());
+        assert_eq!(next_item.item(), &"hello");
+
+        let item = assert_ready!(pool.get());
+        assert_eq!(item.item(), &"bar");
+    }
+
+    #[futures_test::test]
+    async fn poll_pop_from_empty_pool_returns_pending() {
+        let mut pool = PriorityPool::<&str, u32>::new();
+        assert_pending!(pool.pop());
+    }
+
+    #[futures_test::test]
+    async fn poll_pop_from_pool_of_one_item_returns_ready() {
+        let mut pool = PriorityPool::<&str, u32>::new();
+        pool.put("hello", 1);
+        let (item, _) = assert_ready!(pool.pop());
+        assert_eq!(item, "hello");
+    }
+
+    #[futures_test::test]
+    async fn poll_pop_reduce_len_by_one() {
+        let mut pool = PriorityPool::<&str, u32>::new();
+        pool.put("hello", 1);
+        let (item, _) = assert_ready!(pool.pop());
+        assert_eq!(item, "hello");
+        assert_eq!(pool.len(), 0);
+    }
+
+    #[futures_test::test]
+    async fn poll_pop_from_exhausted_pool_returns_pending() {
+        let mut pool = PriorityPool::<&str, u32>::new();
+        pool.put("hello", 1);
+        let (item, _) = assert_ready!(pool.pop());
+        assert_eq!(item, "hello");
+        assert_pending!(pool.pop());
+    }
+
+    #[futures_test::test]
+    async fn poll_pop_after_dropping_borrowed_item_returns_ready() {
+        let mut pool = PriorityPool::<&str, u32>::new();
+        pool.put("hello", 1);
+        let item = assert_ready!(pool.get());
+        drop(item);
+        let (item, _) = assert_ready!(pool.pop());
+        assert_eq!(item, "hello");
+    }
+
+    #[futures_test::test]
+    async fn poll_pop_after_dropping_removed_item_returns_pending() {
+        let mut pool = PriorityPool::<&str, u32>::new();
+        pool.put("hello", 1);
+        let (item, _) = assert_ready!(pool.pop());
+        assert_eq!(item, "hello");
+        drop(item);
+        assert_pending!(pool.pop());
+    }
 }

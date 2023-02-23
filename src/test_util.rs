@@ -1,3 +1,5 @@
+#![allow(unused_macros)]
+
 macro_rules! assert_ready {
     ($fut:expr) => {{
         let mut fut = $fut;

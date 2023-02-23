@@ -388,6 +388,12 @@ mod tests {
     use crate::test_util::*;
 
     #[test]
+    fn create_pool() {
+        let pool = Pool::<i32>::new();
+        assert_eq!(pool.len(), 0);
+    }
+
+    #[test]
     fn create_pool_with_capacity() {
         let pool = Pool::<i32>::with_capacity(10);
         assert_eq!(pool.len(), 0);
@@ -551,7 +557,16 @@ mod tests {
     }
 
     #[futures_test::test]
-    async fn poll_pop_after_dropping_borrowed_item_returns_pending() {
+    async fn poll_pop_after_dropping_borrowed_item_returns_ready() {
+        let mut pool = Pool::new();
+        pool.put(1);
+        let item = assert_ready!(pool.get());
+        drop(item);
+        assert_ready!(pool.pop());
+    }
+
+    #[futures_test::test]
+    async fn poll_pop_after_dropping_removed_item_returns_pending() {
         let mut pool = Pool::new();
         pool.put(1);
         let item = assert_ready!(pool.pop());
